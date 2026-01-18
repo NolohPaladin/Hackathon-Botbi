@@ -9,6 +9,10 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pydantic import BaseModel
+import os 
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -20,11 +24,11 @@ app.add_middleware(
 )
 
 # Clave de API de la IA que se usara
-GROQ_API_KEY = "API_KEY_PLACEHOLDER" 
+GROQ_API_KEY = os.getenv("API_KEY_GROQ")
 
 # Configuracion del correo y la contraseña de aplicacion que se usara
-EMAIL_SENDER = "CORREO@gmail.com"  
-EMAIL_PASSWORD = "CONTRASEÑA_PLACEHOLDER" # Contraseña de Aplicación de Google
+EMAIL_SENDER = "milerrores25@gmail.com"  
+EMAIL_PASSWORD = os.getenv("CONTRA_APLICACION") # Contraseña de Aplicación de Google
 
 # Modelo para recibir los datos del suscriptor desde React
 class Suscriptor(BaseModel):
