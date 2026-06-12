@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import feedparser
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+import asyncio
 #Imports para el correo
 import smtplib
 from email.mime.text import MIMEText
@@ -29,6 +30,16 @@ GROQ_API_KEY = os.getenv("API_KEY_GROQ")
 # Configuracion del correo y la contraseña de aplicacion que se usara
 EMAIL_SENDER = "milerrores25@gmail.com"  
 EMAIL_PASSWORD = os.getenv("CONTRA_APLICACION") # Contraseña de Aplicación de Google
+
+# Estructura para almacenar en caché
+CACHE_NOTICIAS = {
+    "datos": None,
+    "expira_en": None
+}
+CACHE_MERCADOS = {
+    "datos": None,
+    "expira_en": None
+}
 
 # Modelo para recibir los datos del suscriptor desde React
 class Suscriptor(BaseModel):
@@ -66,7 +77,7 @@ def consultar_groq(texto_noticia, categoria):
     }
     
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15) # Un poco más de tiempo
+        response = requests.post(url, headers=headers, json=payload, timeout=15) # Un poco más de tiempo para la carga de noticias 
         
         if response.status_code == 200:
             datos = response.json()
@@ -107,23 +118,23 @@ def enviar_correo_vip(destinatario, noticia_tech, noticia_biz):
           <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
             <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
               
-              <div style="background-color: #7c3aed; padding: 20px; text-align: center; color: white;">
+              <div style="background-color: #1d4ed8; padding: 20px; text-align: center; color: white;">
                 <h1 style="margin: 0;">Hackathon Botbi IA 🤖</h1>
                 <p>Lo mejor del día seleccionado por IA</p>
               </div>
 
               <div style="padding: 20px;">
-                <h2 style="color: #333; border-bottom: 2px solid #7c3aed; padding-bottom: 10px;">⚡ Top Tecnología</h2>
+                <h2 style="color: #333; border-bottom: 2px solid #1d4ed8; padding-bottom: 10px;">⚡ Top Tecnología</h2>
                 <h3 style="color: #1e293b;">{noticia_tech.get('titulo', 'N/A')}</h3>
                 <p style="color: #64748b; line-height: 1.6;">{noticia_tech.get('contenido', 'N/A')}</p>
-                <a href="{noticia_tech.get('url_original', '#')}" style="display: inline-block; margin-top: 10px; color: #7c3aed; font-weight: bold;">Leer completa →</a>
+                <a href="{noticia_tech.get('url_original', '#')}" style="display: inline-block; margin-top: 10px; color: #1d4ed8; font-weight: bold;">Leer completa →</a>
 
                 <div style="height: 20px;"></div>
 
-                <h2 style="color: #333; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">💼 Top Negocios</h2>
+                <h2 style="color: #333; border-bottom: 2px solid #4f46e5; padding-bottom: 10px;">💼 Top Negocios</h2>
                 <h3 style="color: #1e293b;">{noticia_biz.get('titulo', 'N/A')}</h3>
                 <p style="color: #64748b; line-height: 1.6;">{noticia_biz.get('contenido', 'N/A')}</p>
-                <a href="{noticia_biz.get('url_original', '#')}" style="display: inline-block; margin-top: 10px; color: #2563eb; font-weight: bold;">Leer completa →</a>
+                <a href="{noticia_biz.get('url_original', '#')}" style="display: inline-block; margin-top: 10px; color: #4f46e5; font-weight: bold;">Leer completa →</a>
               </div>
 
               <div style="background-color: #f8fafc; padding: 15px; text-align: center; font-size: 12px; color: #94a3b8;">
@@ -147,24 +158,25 @@ def enviar_correo_vip(destinatario, noticia_tech, noticia_biz):
         print(f"Error enviando correo: {e}")
         return False
 
-# Metodo para la busqueda de informacion y la clasificion de las mismas
-def buscar_noticias_rss(url_feed, categoria, nombre_fuente):
+# Metodo para la busqueda de informacion y la clasificion de las mismas de forma asíncrona
+async def buscar_noticias_rss_async(url_feed, categoria, nombre_fuente):
     noticias_procesadas = []
     print(f"Escaneando {nombre_fuente} ({categoria})...")
     
     try:
-        feed = feedparser.parse(url_feed)
+        # feedparser.parse realiza una petición HTTP síncrona, la pasamos a un hilo de fondo
+        feed = await asyncio.to_thread(feedparser.parse, url_feed)
         
-        # Procesamos 6 noticias
-        for entrada in feed.entries[:6]:
-            
+        # Función auxiliar interna para procesar una entrada de forma asíncrona y paralela
+        async def procesar_entrada(entrada):
             titulo_orig = entrada.title
             contenido_raw = entrada.summary if 'summary' in entrada else entrada.title
             texto_completo = f"{titulo_orig}. {contenido_raw[:300]}" # Enviamos más contexto a la IA
             
             print(f"    Analizando: {titulo_orig[:20]}...")
             
-            titulo_ia, resumen_ia = consultar_groq(texto_completo, categoria)
+            # consultar_groq realiza peticiones síncronas a la API de Groq, la pasamos a un hilo de fondo
+            titulo_ia, resumen_ia = await asyncio.to_thread(consultar_groq, texto_completo, categoria)
             
             if titulo_ia == "Error IA":
                 titulo_final = titulo_orig
@@ -176,7 +188,7 @@ def buscar_noticias_rss(url_feed, categoria, nombre_fuente):
                 contenido_final = resumen_ia
                 fuente_display = nombre_fuente 
 
-            nueva_noticia = {
+            return {
                 "id": str(uuid.uuid4()),
                 "titulo": titulo_final,
                 "contenido": contenido_final,
@@ -186,7 +198,10 @@ def buscar_noticias_rss(url_feed, categoria, nombre_fuente):
                 "url_original": entrada.link,
                 "imagen": "https://via.placeholder.com/300"
             }
-            noticias_procesadas.append(nueva_noticia)
+
+        # Procesamos un máximo de 6 noticias en paralelo
+        entradas = feed.entries[:6]
+        noticias_procesadas = await asyncio.gather(*(procesar_entrada(e) for e in entradas))
             
     except Exception as e:
         print(f" Error feed: {e}")
@@ -194,18 +209,34 @@ def buscar_noticias_rss(url_feed, categoria, nombre_fuente):
     return noticias_procesadas
 
 @app.get("/api/noticias")
-def obtener_noticias():
+async def obtener_noticias():
+    global CACHE_NOTICIAS
+    ahora = datetime.now()
+    
+    # Si la caché está activa y no ha expirado, la usamos
+    if CACHE_NOTICIAS["datos"] is not None and CACHE_NOTICIAS["expira_en"] > ahora:
+        print("⚡ Retornando noticias desde la caché en memoria.")
+        return CACHE_NOTICIAS["datos"]
+        
     todas = []
     
-    # TECNOLOGÍA -> Fuente Real: "The Verge"
-    todas.extend(buscar_noticias_rss("https://www.theverge.com/rss/index.xml", "Tecnología", "The Verge"))
+    # Buscamos en paralelo las noticias de Tecnología y Negocios
+    resultados = await asyncio.gather(
+        buscar_noticias_rss_async("https://www.theverge.com/rss/index.xml", "Tecnología", "The Verge"),
+        buscar_noticias_rss_async("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "Negocios", "NY Times")
+    )
     
-    # NEGOCIOS -> Fuente Real: "NY Times"
-    todas.extend(buscar_noticias_rss("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "Negocios", "NY Times"))
+    for lista in resultados:
+        todas.extend(lista)
+        
+    # Guardamos en caché por 10 minutos
+    CACHE_NOTICIAS["datos"] = todas
+    CACHE_NOTICIAS["expira_en"] = ahora + timedelta(minutes=10)
+    print("💾 Caché de noticias actualizada por 10 minutos.")
     
     return todas
 
-# --- MERCADOS (SIN CAMBIOS) ---
+# --- MERCADOS (CON CACHÉ Y ASINCRONISMO) ---
 ACCIONES_FIJAS = [
     {"nombre": "AAPL", "precio": 185.92, "tipo": "Accion", "logo": "", "cambio_24h": 1.25},
     {"nombre": "MSFT", "precio": 420.55, "tipo": "Accion", "logo": "", "cambio_24h": 0.89},
@@ -232,27 +263,49 @@ def obtener_top_criptos_real():
     return []
 
 @app.get("/api/mercados")
-def obtener_mercados():
+async def obtener_mercados():
+    global CACHE_MERCADOS
+    ahora = datetime.now()
+    
+    # Si la caché está activa y no ha expirado, la usamos
+    if CACHE_MERCADOS["datos"] is not None and CACHE_MERCADOS["expira_en"] > ahora:
+        print("⚡ Retornando mercados desde la caché en memoria.")
+        return CACHE_MERCADOS["datos"]
+        
     datos = []
     datos.extend(ACCIONES_FIJAS)
-    datos.extend(obtener_top_criptos_real())
+    
+    # Obtenemos las criptomonedas de forma asíncrona
+    criptos = await asyncio.to_thread(obtener_top_criptos_real)
+    datos.extend(criptos)
+    
+    # Guardamos en caché por 2 minutos
+    CACHE_MERCADOS["datos"] = datos
+    CACHE_MERCADOS["expira_en"] = ahora + timedelta(minutes=2)
+    print("💾 Caché de mercados actualizada por 2 minutos.")
+    
     return datos
 
 # Endpoint del correo
 @app.post("/api/suscribir")
-def suscribir_usuario(datos: Suscriptor):
+async def suscribir_usuario(datos: Suscriptor):
     print(f" Nuevo intento de suscripción: {datos.email}")
     
-    # Buscamos noticias de las fuentes usadas
-    noticias_tech = buscar_noticias_rss("https://www.theverge.com/rss/index.xml", "Tecnología", "The Verge")
-    noticias_biz = buscar_noticias_rss("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "Negocios", "NY Times")
+    # Buscamos noticias de forma asíncrona
+    resultados = await asyncio.gather(
+        buscar_noticias_rss_async("https://www.theverge.com/rss/index.xml", "Tecnología", "The Verge"),
+        buscar_noticias_rss_async("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "Negocios", "NY Times")
+    )
+    
+    noticias_tech = resultados[0]
+    noticias_biz = resultados[1]
     
     # Elegimos la #1 de cada categoría
     top_tech = noticias_tech[0] if noticias_tech else {}
     top_biz = noticias_biz[0] if noticias_biz else {}
 
-    # Enviamos el correo
-    exito = enviar_correo_vip(datos.email, top_tech, top_biz)
+    # Enviamos el correo asíncronamente
+    exito = await asyncio.to_thread(enviar_correo_vip, datos.email, top_tech, top_biz)
     
     if exito:
         return {"mensaje": "Correo enviado", "status": "ok"}
